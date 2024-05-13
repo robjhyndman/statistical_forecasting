@@ -1,0 +1,524 @@
+---
+title: "Statistical forecasting"
+author: "Rob J Hyndman"
+pdf-engine: latexmk
+fig-width: 7.5
+fig-height: 3.5
+format:
+  beamer:
+    theme: monash
+    aspectratio: 169
+    fontsize: 14pt
+    section-titles: false
+    knitr:
+      opts_chunk:
+        dev: "CairoPDF"
+include-in-header: header.tex
+highlight-style: tango
+keep-tex: true
+execute:
+  echo: false
+  message: false
+  warning: false
+  cache: true
+---
+
+```{r setup}
+#| include: false
+#| cache: false
+source("setup.R")
+```
+
+```{r cover, include=FALSE}
+# Generate plot for title page
+fname <- "figure/cover.pdf"
+Cairo::CairoPDF(file = fname, width = 5, height = 2.5)
+austa <- readr::read_csv("http://OTexts.com/fpp3/extrafiles/austa.csv") |>
+  as_tsibble(index = Year)
+fit <- austa |> model(ETS(Visitors))
+sim <- fit |>
+  generate(h = 10, times = 20) |>
+  mutate(
+    replicate = factor(.rep, levels = 1:20, labels = paste("Future", 1:20))
+  )
+ggplot(austa, aes(x = Year)) +
+  geom_line(aes(y = Visitors, colour = "Data")) +
+  geom_line(aes(y = .sim, colour = replicate), data = sim) +
+  scale_colour_manual(
+    values = c(
+      "#000000", "#D55E00", "#0072B2", "#009E73", "#CC79A7", "#E69F00", "#56B4E9", "#F0E442",
+      sample(rainbow(13))
+    ),
+    breaks = c("Data", paste("Future", 1:20)),
+    name = " "
+  ) +
+  guides(color = "none") +
+  theme_minimal() +
+  scale_y_discrete(breaks = "none") +
+  scale_x_discrete(breaks = "none") +
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank()
+  )
+crop::dev.off.crop(fname)
+```
+
+```{r get_local, eval=FALSE, include=FALSE}
+localcases <- readr::read_csv("~/git/covid19ensemble/inputs/local_cases_input.csv") |>
+  rename(
+    n = count,
+    date = date_onset
+  ) |>
+  # Adjust count to include cases yet to be detected
+  mutate(n = n / detection_probability) |>
+  # Remove last days with prob of detection < 0.5
+  filter(detection_probability > 0.5) |>
+  as_tsibble(index = date, key = state) |>
+  select(date, state, n) |>
+  filter(state != "AUS")
+saveRDS(localcases, "localcases.rds")
+```
+
+```{r read_local, echo=FALSE, include=FALSE}
+localcases <- readRDS("localcases.rds")
+```
+
+## Outline
+
+\vspace*{0.7cm}\tableofcontents
+
+# Random futures
+
+## Random futures
+
+```{r austa}
+#| include: false
+# Grab ABS data
+austa <- readxl::read_excel("340101.xlsx", sheet="Data1", skip=9) |>
+  rename(date = `Series ID`, value = A85375847A) |>
+  select(date, value) |>
+  transmute(
+    Month = yearmonth(date),
+    Visitors = value / 1e3
+  ) |>
+  bind_rows(tibble(
+    Month = yearmonth(seq(as.Date("2021-11-01"), by = "1 month", length = 2)),
+    Visitors = NA_real_
+  )) |>
+  as_tsibble(index = Month) |>
+  filter(Month >= yearmonth("2000 Jan"))
+# Fit ETS model
+fit <- austa |>
+  filter(Month < yearmonth("2018 Jan")) |>
+  model(ETS(Visitors))
+# Product forecasts
+fc <- forecast(fit, h = 48) |>
+  mutate(Month = as.Date(Month))
+# Simulate 100 future sample paths
+set.seed(1967)
+sim <- fit |>
+  generate(h = 48, times = 100) |>
+  mutate(
+    replicate = factor(.rep, levels = 1:100, labels = paste("Future", 1:100)),
+    .rep = as.numeric(.rep)
+  ) |>
+  as_tibble() |>
+  mutate(Month = as.Date(Month))
+# Nice colors
+cols <- scale_colour_manual(
+  values = c("#D55E00", "#0072B2", "#009E73", "#CC79A7", "#E69F00", "#56B4E9", "#F0E442", sample(rainbow(93))),
+  breaks = paste("Future", 1:100),
+  name = " "
+)
+# Now build up some plots with alignment
+p1 <- austa |>
+  mutate(Visitors = if_else(Month >= yearmonth("2018 Jan"), NA_real_, Visitors)) |>
+  as_tibble() |>
+  mutate(Month = as.Date(Month)) |>
+  ggplot(aes(x = Month, y = Visitors)) +
+  geom_line() +
+  labs(
+    x = "Month",
+    y = "Thousands of visitors",
+    title = "Total short-term visitors to Australia"
+  ) +
+  scale_x_date(
+    breaks = seq(as.Date("2000-01-01"), by = "5 years", l = 5),
+    labels = paste("Jan", seq(2000, 2020, by = 5)),
+    minor_breaks = seq(as.Date("2001-01-01"), by = "1 year", l = 25)
+  ) +
+  ylim(min(austa$Visitors, sim$.sim, na.rm = TRUE), max(austa$Visitors, sim$.sim, na.rm = TRUE))
+p2 <- p1 + cols +
+  geom_line(aes(y = .sim, group = replicate, colour = replicate),
+    data = sim |> filter(.rep <= 1)
+  )
+p3 <- p1 + cols +
+  geom_line(aes(y = .sim, group = replicate, colour = replicate),
+    data = sim |> filter(.rep <= 2)
+  )
+p4 <- p1 + cols +
+  geom_line(aes(y = .sim, group = replicate, colour = replicate),
+    data = sim |> filter(.rep <= 3)
+  )
+p5 <- p1 + cols +
+  geom_line(aes(y = .sim, group = replicate, colour = replicate),
+    data = sim |> filter(.rep <= 10)
+  )
+p6 <- p1 + cols +
+  geom_line(aes(y = .sim, group = replicate, colour = replicate), alpha = 0.5, data = sim) +
+  guides(colour = "none")
+p7 <- p1 +
+  geom_line(aes(y = .sim, group = replicate, colour = replicate), alpha = 0.5, col = "gray", data = sim) +
+  guides(colour = "none")
+p8 <- p7 + autolayer(fc, level = c(50, 90))
+p9 <- p8 + coord_cartesian(xlim=as.Date(c("2013-01-01","2021-08-01"))) +
+  scale_x_date(
+    breaks = seq(as.Date("2000-01-01"), by = "2 years", l = 11),
+    labels = paste("Jan", seq(2000, 2020, by = 2)),
+    minor_breaks = seq(as.Date("2001-01-01"), by = "1 year", l = 25)
+  )
+aligned_plots <- align_patches(p1, p2, p3, p4, p5, p6, p7, p8, p9)
+for(i in seq(length(aligned_plots))) {
+  fname <- paste0("figure/austa",i,".pdf")
+  Cairo::CairoPDF(file = fname, width = 7.5, height=3.5)
+  print(aligned_plots[[i]])
+  crop::dev.off.crop(file = fname)
+}
+fname <- paste0("figure/austa10.pdf")
+Cairo::CairoPDF(file = fname,  width = 7.5, height=3.5)
+aligned_plots[[9]] +
+  geom_line(
+    colour = "black",
+    data = austa |> filter(Month >= yearmonth("2018 Jan")) |> mutate(Month = as.Date(Month))
+  )
+crop::dev.off.crop(file = fname)
+```
+
+\forecast\pause\centering
+\only<1>{\includegraphics[width=14.5cm]{austa1}}
+\only<2>{\includegraphics[width=14.5cm]{austa2}}
+\only<3>{\includegraphics[width=14.5cm]{austa3}}
+\only<4>{\includegraphics[width=14.5cm]{austa4}}
+\only<5>{\includegraphics[width=14.5cm]{austa5}}
+\only<6>{\includegraphics[width=14.5cm]{austa6}}
+\only<7>{\includegraphics[width=14.5cm]{austa7}}
+\only<8>{\includegraphics[width=14.5cm]{austa8}}
+\only<9>{\includegraphics[width=14.5cm]{austa9}}
+\only<10->{\includegraphics[width=14.5cm]{austa10}}
+
+\only<2->{\simfutures}
+
+\only<11>{\begin{textblock}{8.5}(.3,6.8)\begin{alertblock}{}\fontsize{12}{13}\sf
+``He who sees the past as surprise-free is bound to have a future full of surprises.''\\\mbox{}\hfill{\small (Amos Tversky)}
+\end{alertblock}\end{textblock}
+}
+
+# Forecasting peak electricity demand
+
+## Forecasting peak electricity demand
+
+```{r elec1}
+vic_elec |>
+  autoplot(Demand) +
+  labs(title = "VIC statewide demand", y = "GW")
+```
+
+## Forecasting peak electricity demand
+
+```{r elec2}
+vic_elec |>
+  filter(Date >= "2013-12-01", Date <= "2014-02-28") |>
+  autoplot(Demand) +
+  labs(title = "VIC statewide demand: Summer 2013/14", y = "GW")
+```
+
+## Forecasting peak electricity demand
+
+```{r elec2a}
+vic_elec |>
+  filter(Date >= "2013-12-01", Date <= "2014-02-28") |>
+  pivot_longer(Demand:Temperature, values_to = "value", names_to = "variable") |>
+  ggplot(aes(x = Time, y = value)) +
+  geom_line() +
+  facet_grid(variable ~ ., scales = "free_y") +
+  labs(
+    title = "VIC statewide demand: Summer 2013/14",
+    x = "Time [30m]",
+    y = "Degrees Celsius                           GW"
+  )
+```
+
+## Forecasting peak electricity demand
+
+```{r elec3, include=FALSE}
+p1 <- vic_elec |>
+  ggplot(aes(x = Temperature, y = Demand)) +
+  geom_point() +
+  labs(y = "Demand (GW)", x = "Temperature (degrees C)")
+p2 <- vic_elec |>
+  mutate(
+    dow = lubridate::wday(Date, week_start = 1),
+    Workday = if_else(dow <= 5 & !Holiday, "Workday", "Non-workday")
+  ) |>
+  ggplot(aes(x = Temperature, y = Demand, col = Workday)) +
+  geom_point(alpha = 0.3) +
+  labs(y = "Demand (GW)", x = "Temperature (degrees C)")
+aligned_plots <- align_patches(p1, p2)
+fname <- paste0(here::here("figure"), "/elecscatter1.png")
+png(fname, width = 20, height = 10, units="cm", res=300, type="cairo-png")
+print(aligned_plots[[1]])
+crop::dev.off.crop(fname)
+fname <- paste0(here::here("figure"), "/elecscatter2.png")
+png(fname, width = 20, height = 10, units="cm", res=300, type="cairo-png")
+print(aligned_plots[[2]])
+crop::dev.off.crop(fname)
+```
+
+\vspace*{0.2cm}
+\only<1>{\centerline{\includegraphics[width=14cm, height=20cm]{figure/elecscatter1.png}}}
+\only<2>{\centerline{\includegraphics[width=14cm, height=20cm]{figure/elecscatter2.png}}}
+
+## Forecasting peak electricity demand
+\vspace*{0.2cm}
+
+```{r elec5}
+df <- vic_elec |>
+  as_tibble() |>
+  mutate(
+    dow = lubridate::wday(Date, week_start = 1),
+    Workday = if_else(dow <= 5 & !Holiday, "Workday", "Non-workday"),
+    state = strftime(Time, format = "%H:%M"),
+  )
+states <- sort(unique(df$state))
+for (i in seq_along(states)) {
+  fname <- paste0(here::here("figure"), "/elec", i, ".pdf")
+  Cairo::CairoPDF(fname, width = 20 / 2.54, height = 10 / 2.54)
+  p <- df |>
+    filter(state == states[i]) |>
+    ggplot(aes(x = Temperature, y = Demand, col = Workday)) +
+    geom_point(alpha = 0.6) +
+    geom_label(aes(x = 10, y = 9000, label = states[i]), color = "black") +
+    coord_cartesian(ylim=range(df$Demand), xlim=range(df$Temperature)) +
+    labs(y = "Demand (GW)", x = "Temperature (degrees C)")
+  print(p)
+  crop::dev.off.crop(fname)
+}
+```
+
+\centerline{\animategraphics[width=14cm,loop]{48}{figure/elec}{1}{48}}
+
+## Forecasting peak electricity demand
+
+\alert{Predictors}\vspace*{-0.2cm}
+  \begin{itemize}\itemsep=0cm\parskip=0cm
+    \item calendar effects: time of day, day of week, time of year, holidays, etc.
+    \item prevailing and recent weather conditions
+    \item climate change
+    \item demand response incentives
+    \item changing technology
+    \item economic and demographic changes
+  \end{itemize}\vspace*{0.2cm}
+
+  \begin{block}{}
+    \bfseries We build a nonparametric stochastic model of demand as a function of these predictors.
+  \end{block}
+
+# Forecasting COVID19 cases
+
+## Forecasting COVID19 cases
+
+\begin{block}{}The \textbf{Australian Health Protection Principal Committee} is the key decision-making committee for national health emergencies. It comprises all state and territory Chief Health Officers and is chaired by the Australian Chief Medical Officer.
+\end{block}
+
+\begin{alertblock}{COVID-19 forecasting group}
+\begin{multicols}{3}\small
+\begin{itemize}\tightlist
+\item Peter Dawson
+\item Nick Golding
+\item Rob J Hyndman
+\item Dennis Liu
+\item Michael Lydeamore
+\item James M McCaw
+\item Jodie McVernon
+\item Pablo \rlap{Montero-Manso}
+\item Robert Moss
+\item Mitchell \rlap{O'Hara-Wild}
+\item David J Price
+\item Joshua V Ross
+\item Gerry Ryan
+\item Freya M Shearer
+\item Tobin South
+\item Nicholas Tierney
+\item Ruarai Tobin
+\end{itemize}
+\end{multicols}\vspace*{-0.2cm}
+\end{alertblock}
+
+## Forecasting COVID19 cases
+
+\alert{Data sources}
+
+* Case-level data of all positive COVID-19 tests: onset and detection times.
+* Daily population mobility data from Google, Apple & Facebook
+* Weekly non-household contact surveys
+* Weekly behavioural surveys
+* Daily case numbers from many countries and regions via the Johns Hopkins COVID-19 repository
+
+## Forecasting COVID19 cases
+\fontsize{13}{14}\sf
+
+```{r, echo=FALSE}
+state_colours <- c(
+  NSW = "#56b4e9",
+  VIC = "#0072b2",
+  QLD = "#009e73",
+  SA = "#f0e442",
+  NT = "#d55e00",
+  WA = "#e69f00",
+  TAS = "#cc79a7",
+  ACT = "#cccccc"
+)
+localcases |>
+  filter(date <= max(date)-3) |>
+  autoplot(n+1) +
+  labs(x = "Date of symptom onset", y = "Number of daily cases") +
+  scale_x_date(
+    breaks = seq(as.Date("2020-01-01"), by="1 month", length=35),
+    minor_breaks = NULL,
+    labels = c(
+      "J\n 2020","F","M","A","M","J","J","A","S","O","N","D",
+      "J\n 2021","F","M","A","M","J","J","A","S","O","N","D",
+      "J\n 2022","F","M","A","M","J","J","A","S","O","N")
+  ) +
+  scale_color_manual(values = state_colours) +
+  scale_y_log10(breaks = 10^(1:5),
+  labels = c("10","100","1000","10000","100000"))
+```
+
+## Forecasting COVID19 cases
+\fontsize{13}{14}\sf
+\vspace*{0.1cm}
+
+### Model 1: SEEIIR (Uni Melbourne/Doherty Institute)
+
+* Stochastic compartmental model with time-varying effective reproduction number.
+
+### Model 2: Generative model (Uni Adelaide)
+
+* Simulation with three types of infectious individuals: imported, asymptomatic, symptomatic
+
+### Model 3: Global AR model (Monash)
+
+* Single model fitted to all Johns Hopkins data from countries and regions with sufficient data.
+* Series with obvious anomalies removed.
+
+## Forecasting COVID19 cases
+\fontsize{14}{17}\sf
+
+\alert{Forecasting ensemble}
+
+* Forecasts obtained from a equally-weighted mixture distribution of the component forecasts.
+* Also known as "linear pooling"
+* Works best when individual models are over-confident and use different data sources.
+
+## Forecasting COVID19 cases
+
+```{r combined_forecasts, eval=FALSE}
+# Read weekly samples files from mediaflux and save as rds file
+samples <- fs::dir_ls("~/mediaflux", glob = "*.csv") |>
+  stringr::str_subset("combined_samples_202") |>
+  purrr::map_dfr(read_csv) |>
+  nest(sample = sim1:sim2000) |>
+  group_by(date, state, .model, forecast_origin) |>
+  mutate(sample = list(unname(unlist(sample)))) |>
+  ungroup() |>
+  saveRDS(file = "samples.rds")
+```
+
+```{r read_samples}
+samples <- readRDS("samples.rds")
+ensemble <- make_ensemble(samples)
+```
+
+```{r some_plots, include=FALSE}
+vic_ensemble <- ensemble |> filter(state == "VIC")
+origins <- sort(unique(vic_ensemble$forecast_origin))
+origins <- origins[c(2, 8, 11, 33, 48, 88, 106)]
+for (i in seq_along(origins)) {
+  p <- vic_ensemble |>
+    filter(forecast_origin == origins[i], date <= origins[i] + 7 * 4) |>
+    mutate(dist = dist_sample(sample)) |>
+    select(-sample) |>
+    as_fable(
+      index = date, key = forecast_origin,
+      response = "n", distribution = dist
+    ) |>
+    autoplot(level = c(50, 60, 70, 80, 90), point_forecast = lst(median)) +
+    autolayer(
+      filter(
+        localcases, state == "VIC",
+        date >= origins[i] - 7 * 12, date <= origins[i] + 7 * 4
+      ),
+      n
+    ) +
+    scale_x_date(
+      breaks = seq(as.Date("2020-01-01"), by = "1 month", l = 24),
+      minor_breaks = NULL,
+      labels = paste(
+        rep(c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"), 2),
+        rep(2020:2021, c(12, 12))
+      )
+    ) +
+    theme(legend.position = "none") +
+    xlab("Date of symptom onset") + 
+    ylab("Number of daily cases") +
+    ggtitle("Ensemble forecasts: Victoria")
+  fname <- paste0(here::here("figure"), "/ensemble", i, ".pdf")
+  Cairo::CairoPDF(fname, width = 20 / 2.54, height = 10 / 2.54
+  )
+  print(p)
+  crop::dev.off.crop(fname)
+}
+```
+
+\only<1>{\full{ensemble1}}
+\only<2>{\full{ensemble4}}
+\only<3>{\full{ensemble6}}
+\only<4>{\full{ensemble7}}
+
+# Future ideas
+
+## Current research interests
+
+* Forecasting thousands of related series simultaneously:
+  - sales forecasts for individual products in a retail store
+  - electricity demand for small regions in a country
+
+* Calibrating forecasting uncertainty using past forecast errors
+
+* Probabilistic identification of anomalies
+  - when the outcome is highly unlikely given the probabilistic forecast
+  - combination of extreme value theory and probability scoring methods
+
+## Statistical forecasting works best when \dots
+
+* there is substantial historical data
+* the evolution of the underlying environment is stable
+* the aim is to produce short-term forecasts
+* there are no feedback loops (forecasts affecting outcomes)
+
+## FUTURE ideas
+
+* Compare statistical forecasts with alternative methods to identify the horizon at which statistical methods are no longer competitive.
+* Use alternative approaches to help identify the forecast distributions.
+
+\vspace*{0.7cm}\pause
+\begin{alertblock}{}
+\href{https://robjhyndman.com}{\faIcon{home} robjhyndman.com}\\
+\href{https://aus.social/@robjhyndman}{\faIcon{mastodon} robjhyndman@aus.social}\\
+\href{https://github.com/robjhyndman}{\faIcon{github}  @robjhyndman}\\
+\href{mailto:rob.hyndman@monash.edu}{\faIcon{envelope}  rob.hyndman@monash.edu}
+\end{alertblock}
+
